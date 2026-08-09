@@ -9,6 +9,7 @@ import {
 
 const NETWORK = "bradbury";
 const RECONCILE_JOB_TYPE = "reconcile_contract";
+const EVIDENCE_PREFLIGHT_QUOTA_TYPE = "evidence_preflight";
 const DEFAULT_MAX_ATTEMPTS = 8;
 
 function isDuplicateKeyError(error) {
@@ -47,6 +48,7 @@ export function createPromiseBondRepository({
   assertDatabase(database);
   const bonds = database.collection("promise_bonds");
   const jobs = database.collection("promisebond_jobs");
+  const evidencePreflightQuotas = database.collection("promisebond_evidence_preflight_quotas");
 
   async function defaultExecuteTransaction(work) {
     if (!database.client || typeof database.client.startSession !== "function") {
@@ -157,6 +159,91 @@ export function createPromiseBondRepository({
         items: page.map(toPublicBond),
         nextCursor: hasMore && page.length > 0 ? encodeBondCursor(page[page.length - 1]) : null
       };
+    },
+
+    async consumeEvidencePreflightQuota({
+      clientHash,
+      cost,
+      globalLimit,
+      clientLimit,
+      windowMs,
+      consumedAt = now()
+    }) {
+      if (typeof clientHash !== "string" || !/^[0-9a-f]{64}$/.test(clientHash)) {
+        throw new TypeError("clientHash must be a lowercase SHA-256 digest");
+      }
+      boundedInteger(cost, "cost", 1, 100);
+      boundedInteger(globalLimit, "globalLimit", cost, 100_000);
+      boundedInteger(clientLimit, "clientLimit", cost, globalLimit);
+      boundedInteger(windowMs, "windowMs", 1_000, 3_600_000);
+      const timestamp = exactDate(consumedAt, "consumedAt");
+      const windowStartMs = Math.floor(timestamp.getTime() / windowMs) * windowMs;
+      const windowStart = new Date(windowStartMs);
+      const expiresAt = new Date(windowStartMs + windowMs);
+      const bucketId = `evidence-preflight:${windowStartMs}`;
+      const clientPath = `clients.${clientHash}`;
+
+      try {
+        await evidencePreflightQuotas.updateOne({ bucketId }, {
+          $setOnInsert: {
+            bucketId,
+            type: EVIDENCE_PREFLIGHT_QUOTA_TYPE,
+            windowStart,
+            expiresAt,
+            globalCost: 0,
+            clients: {},
+            createdAt: timestamp,
+            updatedAt: timestamp
+          }
+        }, { upsert: true });
+      } catch (error) {
+        // A concurrent process may create the fixed-window document after our upsert filter runs.
+        // Its unique bucket index makes that race harmless; consumption below is still one atomic update.
+        if (!isDuplicateKeyError(error)) throw error;
+      }
+
+      const document = await evidencePreflightQuotas.findOneAndUpdate({
+        bucketId,
+        globalCost: { $lte: globalLimit - cost },
+        $or: [
+          { [clientPath]: { $exists: false } },
+          { [clientPath]: { $lte: clientLimit - cost } }
+        ]
+      }, {
+        $inc: { globalCost: cost, [clientPath]: cost },
+        $set: { updatedAt: timestamp }
+      }, {
+        returnDocument: "after",
+        projection: { globalCost: 1, [clientPath]: 1, expiresAt: 1 }
+      });
+
+      if (document) {
+        const clientCost = Number(document.clients?.[clientHash] || 0);
+        const globalCost = Number(document.globalCost || 0);
+        return Object.freeze({
+          allowed: true,
+          clientRemaining: Math.max(0, clientLimit - clientCost),
+          globalRemaining: Math.max(0, globalLimit - globalCost),
+          resetAt: expiresAt
+        });
+      }
+
+      const current = await evidencePreflightQuotas.findOne(
+        { bucketId },
+        { projection: { globalCost: 1, [clientPath]: 1, expiresAt: 1 } }
+      );
+      if (!current) {
+        throw new Error("PromiseBond evidence preflight quota bucket disappeared during consumption");
+      }
+      const clientCost = Number(current.clients?.[clientHash] || 0);
+      const globalCost = Number(current.globalCost || 0);
+      return Object.freeze({
+        allowed: false,
+        scope: globalCost + cost > globalLimit ? "global" : "client",
+        clientRemaining: Math.max(0, clientLimit - clientCost),
+        globalRemaining: Math.max(0, globalLimit - globalCost),
+        resetAt: expiresAt
+      });
     },
 
     async enqueueReconcileJob({ contractAddress, priority = 0, runAfter = now() }) {

@@ -44,7 +44,7 @@ export function HowItWorksPage() {
               </li>
               <li>
                 <b>02</b>
-                <span>The contract fixes the terms, beneficiary, deadlines, criteria, and 2–5 evidence URLs.</span>
+                <span>The app verifies exactly three independent evidence sources before the contract fixes them with the terms, beneficiary, deadlines, and criteria.</span>
               </li>
               <li>
                 <b>03</b>
