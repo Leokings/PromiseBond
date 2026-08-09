@@ -1,0 +1,44 @@
+{
+  "name": "promisebond",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev-promisebond.mjs",
+    "dev:web": "vite --mode promisebond --host 127.0.0.1 --port 8080",
+    "start:api": "node server/promisebond/index.js",
+    "build": "tsc && vite build --mode promisebond && node scripts/check-promisebond-build.mjs",
+    "build:promisebond": "npm run build",
+    "check:env": "node scripts/check-promisebond-env.mjs",
+    "check:env:strict": "node scripts/check-promisebond-env.mjs --strict",
+    "check:vercel": "node scripts/check-promisebond-vercel.mjs",
+    "contracts:lint": "genvm-lint check contracts/PromiseBond.py --json",
+    "contracts:source-hash": "node scripts/hash-promisebond-contract.mjs",
+    "test:server": "node --test tests/server/*.test.mjs",
+    "test:contract": "pytest tests/direct/test_promisebond.py -q"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "5.101.4",
+    "dotenv": "17.4.2",
+    "express": "5.1.0",
+    "genlayer-js": "1.1.8",
+    "lucide-react": "0.468.0",
+    "mongodb": "7.3.0",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "viem": "2.55.11",
+    "wagmi": "3.7.6"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@types/react": "19.0.1",
+    "@types/react-dom": "19.0.2",
+    "@vitejs/plugin-react": "5.0.0",
+    "typescript": "5.9.3",
+    "vite": "6.4.3"
+  },
+  "overrides": {
+    "axios": "1.19.0",
+    "viem": "2.55.11"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "promisebond-vercel-static-build",
+  "private": true,
+  "scripts": {
+    "build": "node ../../../scripts/build-promisebond-vercel.mjs"
+  }
+}

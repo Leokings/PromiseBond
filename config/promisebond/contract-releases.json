@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "network": "bradbury",
+  "genLayerChainId": 4221,
+  "genlayerJsVersion": "1.1.8",
+  "nativeAsset": {
+    "kind": "native",
+    "symbol": "GEN",
+    "decimals": 18,
+    "testnet": true
+  },
+  "activeRelease": "PromiseBondNativeGenV1",
+  "releases": [
+    {
+      "release": "PromiseBondNativeGenV1",
+      "status": "staging_deployed",
+      "policyVersion": "promisebond.native-gen.v1",
+      "sourcePath": "contracts/PromiseBond.py",
+      "sourceKeccak256": "0xea739a4cc74438ffebb4656fd2ebc39d2a1df2239a6a9722ac227009c0488ea1",
+      "runnerDependency": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6",
+      "custody": "contract_native_balance",
+      "settlement": "finalized_native_transfer",
+      "releaseNotes": "Requires two to five independent evidence domains and a majority-available source quorum."
+    }
+  ]
+}

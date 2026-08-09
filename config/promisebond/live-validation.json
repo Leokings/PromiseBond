@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "network": "bradbury",
+  "genLayerChainId": 4221,
+  "release": "PromiseBondNativeGenV1",
+  "sourceKeccak256": "0xea739a4cc74438ffebb4656fd2ebc39d2a1df2239a6a9722ac227009c0488ea1",
+  "verifiedDate": "2026-08-09",
+  "canaryBond": {
+    "contractAddress": "0xBbf887EDD086B73b458c40061f3cB8dD6b2E0EDe",
+    "deploymentTransactionId": "0x11c0f92640e6b0eb8ffb192752666a3a7a310f2a347ceab6de8ed39dde330a57",
+    "deploymentFinalizationTransaction": "0xb7bbde71bc0165d6857b48d53d8293c482b644160836adb92d62eb37a86434f5",
+    "fundingTransactionId": "0x14ab780dddd528551b8a3ba51d02c7eef459ca912c2b1e45977fec907d51936a",
+    "amountWei": "1000000000000000",
+    "finalizedExecution": "FINISHED_WITH_RETURN",
+    "finalizedConsensus": "AGREE",
+    "settlement": "LOCKED",
+    "lockedAmountWei": "1000000000000000",
+    "contractBalanceWei": "1000000000000000"
+  },
+  "scope": "Deployment and native funding canary only; each user bond deploys its own contract."
+}

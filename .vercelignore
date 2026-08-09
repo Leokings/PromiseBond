@@ -1,0 +1,10 @@
+.git/
+.secrets/
+.env*
+config/promisebond/.env.local
+node_modules/
+dist/
+artifacts/
+.pytest_cache/
+tests/
+
