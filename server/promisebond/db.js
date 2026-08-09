@@ -131,6 +131,18 @@ export async function ensurePromiseBondIndexes(database) {
       },
       { key: { blobDigest: 1, observedAt: -1 }, name: "promisebond_evidence_observations_blob" }
     ]),
+    database.collection("promisebond_evidence_preflight_quotas").createIndexes([
+      {
+        key: { bucketId: 1 },
+        name: "promisebond_evidence_preflight_quotas_bucket_unique",
+        unique: true
+      },
+      {
+        key: { expiresAt: 1 },
+        name: "promisebond_evidence_preflight_quotas_expiry",
+        expireAfterSeconds: 0
+      }
+    ]),
     database.collection("promisebond_deployments").createIndexes([
       {
         key: { network: 1, contractAddress: 1 },

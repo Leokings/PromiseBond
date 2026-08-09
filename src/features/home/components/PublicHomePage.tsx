@@ -13,8 +13,10 @@ import { useAccount } from "wagmi";
 import { formatEther, getAddress } from "viem";
 import {
   listPromiseBondsForCreator,
+  preflightPromiseBondEvidence,
   registerPromiseBondContract,
-  type PromiseBondApiBond
+  type PromiseBondApiBond,
+  type PromiseBondEvidencePreflight
 } from "../../promisebond/api";
 import {
   deployAndFundPromiseBond,
@@ -51,6 +53,15 @@ import { promiseBondChain } from "../../../providers/PromiseBondWalletProvider";
 type BondDraft = PromiseBondFormSnapshot;
 
 type PromiseBondActionName = "resolve" | "expire_unfunded" | "refund_unresolved" | "refund_stale";
+
+type ReviewedEvidencePreflight = {
+  fingerprint: string;
+  result: PromiseBondEvidencePreflight;
+  verifiedAt: number;
+};
+
+const EVIDENCE_PREFLIGHT_MAX_AGE_MS = 5 * 60 * 1_000;
+const BYTE_COUNT_FORMATTER = new Intl.NumberFormat("en-US");
 
 function futureUtcInput(daysFromNow: number) {
   const value = new Date(Date.now() + daysFromNow * 24 * 60 * 60 * 1_000);
@@ -144,6 +155,20 @@ function parseEvidenceUrls(value: string) {
     .filter(Boolean);
 }
 
+function evidenceFingerprint(urls: string[]) {
+  return JSON.stringify(urls);
+}
+
+function assertNewEvidencePolicy(urls: string[]) {
+  if (urls.length !== 3) {
+    throw new Error("Provide exactly three independent evidence URLs for a new PromiseBond");
+  }
+}
+
+function formatByteCount(value: number) {
+  return `${BYTE_COUNT_FORMATTER.format(value)} byte${value === 1 ? "" : "s"}`;
+}
+
 function shortTransaction(value: string) {
   return `${value.slice(0, 10)}…${value.slice(-8)}`;
 }
@@ -218,6 +243,8 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
   const [draft, setDraft] = useState<BondDraft>(createInitialDraft);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [beneficiaryConfirmed, setBeneficiaryConfirmed] = useState(false);
+  const [evidencePreflight, setEvidencePreflight] = useState<ReviewedEvidencePreflight>();
+  const [evidencePreflightPending, setEvidencePreflightPending] = useState(false);
   const [submissionProgress, setSubmissionProgress] = useState<PromiseBondProgress>();
   const [submissionError, setSubmissionError] = useState("");
   const [walletRpcRepairRequired, setWalletRpcRepairRequired] = useState(false);
@@ -230,10 +257,16 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
   const [managementError, setManagementError] = useState("");
   const [managementPending, setManagementPending] = useState(false);
   const recordsRef = useRef<PromiseBondLocalRecord[]>([]);
+  const evidenceFingerprintRef = useRef("");
+  const evidencePreflightLock = useRef(false);
+  const evidencePreflightRef = useRef<ReviewedEvidencePreflight | undefined>(undefined);
   const submissionLock = useRef(false);
   const managementLock = useRef(false);
   const reconciliationLocks = useRef(new Set<string>());
   const evidenceUrls = parseEvidenceUrls(draft.evidenceUrls);
+  const currentEvidenceFingerprint = evidenceFingerprint(evidenceUrls);
+  evidenceFingerprintRef.current = currentEvidenceFingerprint;
+  evidencePreflightRef.current = evidencePreflight;
   const submissionPending = submissionProgress !== undefined && submissionProgress !== "complete";
   const wrongNetwork = account.isConnected && account.chainId !== promiseBondChain.id;
   const resolutionMinimum = getResolutionMinimum(draft.fundingDeadline);
@@ -244,6 +277,14 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
   const reviewDraft = currentRecord?.draft ?? draft;
   const reviewEvidenceUrls = currentRecord?.evidenceUrls ?? evidenceUrls;
   const reviewCreator = currentRecord?.creator ?? account.address;
+  const evidencePreflightIsFresh = Boolean(
+    evidencePreflight
+    && Date.now() - evidencePreflight.verifiedAt < EVIDENCE_PREFLIGHT_MAX_AGE_MS
+  );
+  const reviewEvidencePreflight = evidencePreflightIsFresh
+    && evidencePreflight?.fingerprint === evidenceFingerprint(reviewEvidenceUrls)
+    ? evidencePreflight
+    : undefined;
   const deployedContract: (PromiseBondDeployedContract & { amountWei: bigint }) | undefined = currentRecord?.contractAddress
     && currentRecord.deploymentTxId
     && currentRecord.stage === "deployed_unfunded"
@@ -305,6 +346,19 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
     setRecords(loaded);
     setLedgerReady(true);
   }, []);
+
+  useEffect(() => {
+    if (!evidencePreflight) return;
+    const remaining = evidencePreflight.verifiedAt
+      + EVIDENCE_PREFLIGHT_MAX_AGE_MS
+      - Date.now();
+    if (remaining <= 0) {
+      setEvidencePreflight(undefined);
+      return;
+    }
+    const timer = window.setTimeout(() => setEvidencePreflight(undefined), remaining);
+    return () => window.clearTimeout(timer);
+  }, [evidencePreflight]);
 
   useEffect(() => {
     if (!ledgerReady) return;
@@ -556,22 +610,38 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
 
   function updateDraft(key: keyof BondDraft, value: string) {
     if (key === "beneficiary") setBeneficiaryConfirmed(false);
+    if (key === "evidenceUrls") setEvidencePreflight(undefined);
     setDraft((current) => ({ ...current, [key]: value }));
   }
 
-  function reviewTerms(event: FormEvent<HTMLFormElement>) {
+  async function reviewTerms(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmissionError("");
     if (currentRecord) {
       setReviewOpen(true);
       return;
     }
+    if (evidencePreflightLock.current) return;
     try {
+      const urls = parseEvidenceUrls(draft.evidenceUrls);
+      assertNewEvidencePolicy(urls);
       contractDraft(draft);
+      const fingerprint = evidenceFingerprint(urls);
+      evidencePreflightLock.current = true;
+      setEvidencePreflight(undefined);
+      setEvidencePreflightPending(true);
+      const result = await preflightPromiseBondEvidence(urls);
+      if (evidenceFingerprintRef.current !== fingerprint) {
+        throw new Error("Evidence URLs changed during preflight; verify the current three URLs again");
+      }
+      setEvidencePreflight({ fingerprint, result, verifiedAt: Date.now() });
       setBeneficiaryConfirmed(false);
       setReviewOpen(true);
     } catch (error) {
       setSubmissionError(error instanceof Error ? error.message : "Review the PromiseBond terms");
+    } finally {
+      evidencePreflightLock.current = false;
+      setEvidencePreflightPending(false);
     }
   }
 
@@ -640,7 +710,21 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
       if (!ledgerReady) throw new Error("Local transaction recovery is still loading");
       if (!beneficiaryConfirmed) throw new Error("Confirm the beneficiary address before signing");
       assertPromiseBondPersistenceAvailable();
+      const urls = parseEvidenceUrls(draft.evidenceUrls);
+      assertNewEvidencePolicy(urls);
       const terms = contractDraft(draft);
+      const fingerprint = evidenceFingerprint(terms.evidenceUrls);
+      const verifiedEvidence = evidencePreflightRef.current;
+      if (!verifiedEvidence) {
+        throw new Error("Run evidence preflight again before requesting a wallet signature");
+      }
+      if (verifiedEvidence.fingerprint !== fingerprint) {
+        throw new Error("Evidence URLs changed after preflight; verify the current three URLs again");
+      }
+      if (Date.now() - verifiedEvidence.verifiedAt >= EVIDENCE_PREFLIGHT_MAX_AGE_MS) {
+        setEvidencePreflight(undefined);
+        throw new Error("Evidence preflight expired; verify the three URLs again before signing");
+      }
       const provider = await connectedProvider();
       const creator = getAddress(account.address);
       operationId = createPromiseBondOperationId();
@@ -750,6 +834,8 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
     setCurrentOperationId(undefined);
     setDraft(createInitialDraft());
     setBeneficiaryConfirmed(false);
+    setEvidencePreflight(undefined);
+    setEvidencePreflightPending(false);
     setSubmissionError("");
     setSubmissionProgress(undefined);
     setWalletRpcRepairRequired(false);
@@ -844,7 +930,7 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
           </header>
 
           <div className="pb-builder-grid">
-            <form className="pb-window" onSubmit={reviewTerms}>
+            <form aria-busy={evidencePreflightPending} className="pb-window" onSubmit={reviewTerms}>
               <div className="pb-window-bar">
                 <span><i /><i /><i /></span>
                 <b>PROMISE.TERMS</b>
@@ -950,25 +1036,32 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
                 </div>
 
                 <label className="pb-field full">
-                  <span>APPROVED EVIDENCE URLS <b>2–5 INDEPENDENT HTTPS</b></span>
+                  <span>APPROVED EVIDENCE URLS <b>EXACTLY 3 INDEPENDENT HTTPS</b></span>
                   <div className="pb-input-icon pb-input-multiline">
                     <Link2 size={16} />
                     <textarea
                       maxLength={2504}
                       onChange={(event) => updateDraft("evidenceUrls", event.target.value)}
-                      placeholder={"https://github.com/your-org/your-project/releases\nhttps://play.google.com/store/apps/details?id=your.app"}
+                      placeholder={"https://registry.example.org/package/1.0.0\nhttps://cdn.example.net/package.json\nhttps://raw.example.com/project/v1/package.json"}
                       required
                       spellCheck={false}
                       value={draft.evidenceUrls}
                     />
                   </div>
-                  <small>One canonical public HTTPS URL per line, each on a different site authority. Validators require a strict-majority availability quorum.</small>
+                  <small>Exactly three small, direct HTTPS sources on different authorities. Avoid repository pages and other large or dynamic HTML. All three must pass the server preflight before review.</small>
                 </label>
               </div>
               <footer className="pb-window-footer">
                 <span><ShieldCheck size={16} /> Draft stays local; every submitted transaction ID is saved for recovery on this device.</span>
-                <button className="pb-button primary compact" type="submit">Review terms <ArrowRight size={16} /></button>
+                <button className="pb-button primary compact" disabled={evidencePreflightPending} type="submit">
+                  {evidencePreflightPending ? "Verifying 3 sources..." : <>Review terms <ArrowRight size={16} /></>}
+                </button>
               </footer>
+              {evidencePreflightPending ? (
+                <div aria-live="polite" className="pb-preflight-progress" role="status">
+                  <i /> Fetching and hashing the exact three evidence sources before review. No wallet request will open.
+                </div>
+              ) : null}
               {submissionError && !reviewOpen ? <p className="pb-form-error" role="alert">{submissionError}</p> : null}
             </form>
 
@@ -1089,6 +1182,35 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
                 <div><dt>STALE SETTLEMENT</dt><dd>If no resolution finalizes for 30 days after the deadline, the bond becomes FAILED and can be queued to the beneficiary.</dd></div>
                 <div><dt>TRANSFER DELIVERY</dt><dd>Creator and beneficiary must be code-free EOAs. QUEUED means GenLayer emitted the native transfer message; recipient delivery is not separately proven by this app.</dd></div>
               </dl>
+              {reviewEvidencePreflight ? (
+                <section aria-labelledby="evidence-preflight-title" className="pb-evidence-preflight">
+                  <header>
+                    <ShieldCheck aria-hidden="true" size={20} />
+                    <div>
+                      <strong id="evidence-preflight-title">Evidence preflight passed</strong>
+                      <span>All three exact URLs were fetched and hashed at {new Date(reviewEvidencePreflight.verifiedAt).toISOString()}.</span>
+                    </div>
+                  </header>
+                  <ol>
+                    {reviewEvidencePreflight.result.sources.map((source) => (
+                      <li key={source.url}>
+                        <a href={source.url} rel="noreferrer" target="_blank">{source.url}</a>
+                        <dl className="pb-evidence-source-metadata">
+                          <div><dt>HTTP</dt><dd>{source.status}</dd></div>
+                          <div><dt>TYPE</dt><dd>{source.contentType}</dd></div>
+                          <div><dt>SIZE</dt><dd>{formatByteCount(source.bytes)}</dd></div>
+                          <div><dt>SHA-256</dt><dd>{source.sha256}</dd></div>
+                        </dl>
+                      </li>
+                    ))}
+                  </ol>
+                </section>
+              ) : !currentRecord ? (
+                <div className="pb-submission-status warning" role="status">
+                  <span><i /> Evidence preflight required</span>
+                  <p>Close this review and choose Review terms again. Deployment stays blocked until the exact three current URLs pass a fresh preflight.</p>
+                </div>
+              ) : null}
               {!currentRecord ? (
                 <label className="pb-beneficiary-confirmation">
                   <input
@@ -1167,6 +1289,7 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
                     || wrongNetwork
                     || submissionPending
                     || (!currentRecord && !beneficiaryConfirmed)
+                    || (!currentRecord && !reviewEvidencePreflight)
                     || Boolean(deployedContract && !connectedCurrentCreator)
                     || Boolean(currentRecord && currentRecord.stage !== "deployed_unfunded")
                   }
@@ -1179,6 +1302,8 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
                       ? "Switch to Bradbury"
                       : submissionPending
                         ? PROGRESS_LABELS[submissionProgress!]
+                        : !currentRecord && !reviewEvidencePreflight
+                          ? "Fresh evidence preflight required"
                         : currentRecord?.stage === "deployment_submitted"
                           ? "Deployment saved — reconciling"
                           : currentRecord?.stage === "funding_submitted"

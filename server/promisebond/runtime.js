@@ -109,7 +109,27 @@ export function createPromiseBondRuntime() {
     isDatabaseConfigured: isPromiseBondMongoConfigured,
     cronSecret: promiseBondCronSecret,
     bodyLimitBytes: bodyLimitPromiseBondEnv(),
-    trustProxy: booleanPromiseBondEnv("PROMISEBOND_TRUST_PROXY", false),
+    // Vercel overwrites X-Forwarded-For and invokes this app through one trusted ingress hop.
+    // Direct/local deployments remain socket-address-only unless an operator opts in explicitly.
+    trustProxy: booleanPromiseBondEnv("PROMISEBOND_TRUST_PROXY", process.env.VERCEL === "1"),
+    evidencePreflightQuotaWindowMs: integerPromiseBondEnv(
+      "PROMISEBOND_EVIDENCE_PREFLIGHT_QUOTA_WINDOW_MS",
+      60_000,
+      1_000,
+      3_600_000
+    ),
+    evidencePreflightGlobalSourceLimit: integerPromiseBondEnv(
+      "PROMISEBOND_EVIDENCE_PREFLIGHT_GLOBAL_SOURCE_LIMIT",
+      300,
+      3,
+      100_000
+    ),
+    evidencePreflightClientSourceLimit: integerPromiseBondEnv(
+      "PROMISEBOND_EVIDENCE_PREFLIGHT_CLIENT_SOURCE_LIMIT",
+      15,
+      3,
+      10_000
+    ),
     rateLimitWindowMs: integerPromiseBondEnv(
       "PROMISEBOND_RATE_LIMIT_WINDOW_MS",
       60_000,

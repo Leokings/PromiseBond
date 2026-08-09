@@ -4,6 +4,7 @@ const PROMISEBOND_SOURCE_KECCAK256 =
   "0xea739a4cc74438ffebb4656fd2ebc39d2a1df2239a6a9722ac227009c0488ea1";
 const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 const DECIMAL_PATTERN = /^(?:0|[1-9][0-9]*)$/;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const REQUEST_TIMEOUT_MS = 40_000;
 
 type PromiseBondApiTerms = {
@@ -33,6 +34,19 @@ export type PromiseBondApiBond = {
   terms: PromiseBondApiTerms;
 };
 
+export type PromiseBondEvidencePreflightSource = {
+  bytes: number;
+  contentType: string;
+  sha256: string;
+  status: number;
+  url: string;
+};
+
+export type PromiseBondEvidencePreflight = {
+  passed: true;
+  sources: PromiseBondEvidencePreflightSource[];
+};
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -54,6 +68,20 @@ function exactDecimal(value: unknown, label: string) {
 function exactString(value: unknown, label: string) {
   if (typeof value !== "string") throw new Error(`PromiseBond API returned an invalid ${label}`);
   return value;
+}
+
+function exactInteger(value: unknown, label: string, minimum: number, maximum: number) {
+  if (!Number.isSafeInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+    throw new Error(`PromiseBond API returned an invalid ${label}`);
+  }
+  return value as number;
+}
+
+function apiErrorMessage(value: unknown, fallback: string) {
+  if (!isObject(value) || !isObject(value.error) || typeof value.error.message !== "string") {
+    return fallback;
+  }
+  return value.error.message;
 }
 
 function parseBond(value: unknown): PromiseBondApiBond {
@@ -136,6 +164,64 @@ export async function registerPromiseBondContract(contractAddress: Address) {
     method: "POST"
   });
   if (!response.ok) throw new Error("PromiseBond index registration is unavailable");
+}
+
+export async function preflightPromiseBondEvidence(
+  urls: string[]
+): Promise<PromiseBondEvidencePreflight> {
+  if (urls.length !== 3 || urls.some((url) => typeof url !== "string" || !url)) {
+    throw new Error("Provide exactly three evidence URLs before running preflight");
+  }
+
+  let response: Response;
+  try {
+    response = await apiFetch("/api/promisebond/evidence/preflight", {
+      body: JSON.stringify({ urls }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Evidence preflight timed out; no wallet transaction was requested");
+    }
+    throw error;
+  }
+
+  const body: unknown = await response.json().catch(() => undefined);
+  if (!response.ok) {
+    throw new Error(apiErrorMessage(body, "Evidence preflight is unavailable"));
+  }
+  if (!isObject(body) || body.passed !== true || !Array.isArray(body.sources)) {
+    throw new Error("PromiseBond API returned an invalid evidence preflight result");
+  }
+
+  const sourcesByUrl = new Map<string, PromiseBondEvidencePreflightSource>();
+  for (const value of body.sources) {
+    if (!isObject(value)) {
+      throw new Error("PromiseBond API returned an invalid preflight source");
+    }
+    const url = exactString(value.url, "preflight source URL");
+    const contentType = exactString(value.contentType, "preflight content type");
+    const sha256 = exactString(value.sha256, "preflight SHA-256").toLowerCase();
+    if (!contentType || !SHA256_PATTERN.test(sha256) || sourcesByUrl.has(url)) {
+      throw new Error("PromiseBond API returned invalid preflight source metadata");
+    }
+    sourcesByUrl.set(url, {
+      bytes: exactInteger(value.bytes, "preflight byte count", 1, 12_000),
+      contentType,
+      sha256,
+      status: exactInteger(value.status, "preflight HTTP status", 200, 299),
+      url
+    });
+  }
+  if (sourcesByUrl.size !== urls.length || urls.some((url) => !sourcesByUrl.has(url))) {
+    throw new Error("Evidence preflight did not verify the exact reviewed URLs");
+  }
+
+  return {
+    passed: true,
+    sources: urls.map((url) => sourcesByUrl.get(url)!)
+  };
 }
 
 export async function listPromiseBondsForCreator(creator: Address, limit = 100) {

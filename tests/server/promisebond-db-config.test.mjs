@@ -90,6 +90,7 @@ test("PromiseBond native indexes use GenLayer contract identity and contain no b
   assert.ok(collectionNames.includes("promisebond_transactions"));
   assert.ok(collectionNames.includes("promisebond_evidence_blobs"));
   assert.ok(collectionNames.includes("promisebond_evidence_observations"));
+  assert.ok(collectionNames.includes("promisebond_evidence_preflight_quotas"));
   assert.equal(collectionNames.some((name) => /bridge|base|escrow|usdc/i.test(name)), false);
 
   const bondIndexes = calls.find(({ name }) => name === "promise_bonds").indexes;
@@ -98,6 +99,20 @@ test("PromiseBond native indexes use GenLayer contract identity and contain no b
     name: "promise_bonds_network_contract_unique",
     unique: true
   });
+
+  const quotaIndexes = calls.find(({ name }) => name === "promisebond_evidence_preflight_quotas").indexes;
+  assert.deepEqual(quotaIndexes, [
+    {
+      key: { bucketId: 1 },
+      name: "promisebond_evidence_preflight_quotas_bucket_unique",
+      unique: true
+    },
+    {
+      key: { expiresAt: 1 },
+      name: "promisebond_evidence_preflight_quotas_expiry",
+      expireAfterSeconds: 0
+    }
+  ]);
 
   const serialized = JSON.stringify(calls);
   assert.doesNotMatch(serialized, /escrowAddress|transactionHash|logIndex|bondId/);

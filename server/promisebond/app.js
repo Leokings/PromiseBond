@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
 import express from "express";
 
@@ -7,6 +7,12 @@ import {
   assertPromiseBondBradburyClient,
   readFinalizedPromiseBond
 } from "../../shared/promisebond/bradbury-native.js";
+import {
+  EVIDENCE_SOURCE_COUNT,
+  EvidencePreflightError,
+  preflightEvidence as defaultPreflightEvidence,
+  validateEvidencePreflightInput
+} from "./evidence-preflight.js";
 import {
   PromiseBondValidationError,
   normalizeContractAddress,
@@ -77,10 +83,17 @@ export function createPromiseBondApp({
   maxConcurrentChainReads = 8,
   workerBatchSize = 25,
   workerMaxRuntimeMs = 240_000,
+  maxConcurrentEvidencePreflights = 4,
+  evidencePreflightQuotaWindowMs = 60_000,
+  evidencePreflightGlobalSourceLimit = 300,
+  evidencePreflightClientSourceLimit = 15,
+  evidencePreflightClientHashKey = cronSecret,
+  preflightEvidence = defaultPreflightEvidence,
   logger = console
 } = {}) {
   if (typeof getRepository !== "function") throw new TypeError("getRepository is required");
   if (typeof getReadClient !== "function") throw new TypeError("getReadClient is required");
+  if (typeof preflightEvidence !== "function") throw new TypeError("preflightEvidence must be a function");
   const bodyLimit = boundedInteger(bodyLimitBytes, 2_048, 256, 262_144);
   const windowMs = boundedInteger(rateLimitWindowMs, 60_000, 1_000, 3_600_000);
   const maxRequests = boundedInteger(rateLimitMax, 60, 1, 1_000);
@@ -89,8 +102,28 @@ export function createPromiseBondApp({
   const maxChainReads = boundedInteger(maxConcurrentChainReads, 8, 1, 32);
   const maxWorkerJobs = boundedInteger(workerBatchSize, 25, 1, 100);
   const maxWorkerRuntime = boundedInteger(workerMaxRuntimeMs, 240_000, 5_000, 280_000);
+  const maxEvidencePreflights = boundedInteger(maxConcurrentEvidencePreflights, 4, 1, 16);
+  const evidenceQuotaWindow = boundedInteger(evidencePreflightQuotaWindowMs, 60_000, 1_000, 3_600_000);
+  const evidenceGlobalSourceLimit = boundedInteger(
+    evidencePreflightGlobalSourceLimit,
+    300,
+    EVIDENCE_SOURCE_COUNT,
+    100_000
+  );
+  const evidenceClientSourceLimit = Math.min(evidenceGlobalSourceLimit, boundedInteger(
+    evidencePreflightClientSourceLimit,
+    15,
+    EVIDENCE_SOURCE_COUNT,
+    10_000
+  ));
+  const evidenceClientHashKey = typeof evidencePreflightClientHashKey === "string" &&
+    Buffer.byteLength(evidencePreflightClientHashKey, "utf8") >= 16 &&
+    Buffer.byteLength(evidencePreflightClientHashKey, "utf8") <= 1_024
+    ? evidencePreflightClientHashKey
+    : "promisebond-evidence-preflight-client-quota-v1";
   const buckets = new Map();
   let activeChainReads = 0;
+  let activeEvidencePreflights = 0;
   const app = express();
 
   app.disable("x-powered-by");
@@ -98,6 +131,19 @@ export function createPromiseBondApp({
   // Disabled by default so a direct client cannot spoof X-Forwarded-For. Operators may enable
   // exactly one trusted reverse-proxy hop (for example, the serverless ingress) explicitly.
   if (trustProxy === true) app.set("trust proxy", 1);
+
+  function requestClientAddress(req) {
+    return trustProxy === true
+      ? (req.ip || req.socket?.remoteAddress || "unknown")
+      : (req.socket?.remoteAddress || "unknown");
+  }
+
+  function evidenceClientHash(req) {
+    return createHmac("sha256", evidenceClientHashKey)
+      .update("promisebond:evidence-preflight:client:v1\0", "utf8")
+      .update(requestClientAddress(req), "utf8")
+      .digest("hex");
+  }
 
   app.use((req, res, next) => {
     req.promiseBondRequestId = createRequestId();
@@ -118,9 +164,7 @@ export function createPromiseBondApp({
       return;
     }
     const currentTime = Number(now());
-    const clientAddress = trustProxy === true
-      ? (req.ip || req.socket?.remoteAddress || "unknown")
-      : (req.socket?.remoteAddress || "unknown");
+    const clientAddress = requestClientAddress(req);
     const key = `public:${clientAddress}`;
     const existing = buckets.get(key);
     const bucket = existing && existing.resetAt > currentTime
@@ -218,6 +262,59 @@ export function createPromiseBondApp({
       checks,
       requestId: req.promiseBondRequestId
     });
+  });
+
+  app.post("/api/promisebond/evidence/preflight", async (req, res, next) => {
+    try {
+      if (!req.is("application/json")) {
+        throw new HttpError(415, "CONTENT_TYPE_REQUIRED", "Content-Type must be application/json");
+      }
+      validateEvidencePreflightInput(req.body);
+      if (activeEvidencePreflights >= maxEvidencePreflights) {
+        throw new HttpError(503, "EVIDENCE_PREFLIGHT_BUSY", "Evidence preflight is at capacity");
+      }
+      activeEvidencePreflights += 1;
+      try {
+        const repository = await requireRepository();
+        let quota;
+        const consumedAt = new Date(Number(now()));
+        try {
+          if (typeof repository.consumeEvidencePreflightQuota !== "function") {
+            throw new TypeError("evidence preflight quota repository is unavailable");
+          }
+          quota = await repository.consumeEvidencePreflightQuota({
+            clientHash: evidenceClientHash(req),
+            cost: EVIDENCE_SOURCE_COUNT,
+            globalLimit: evidenceGlobalSourceLimit,
+            clientLimit: evidenceClientSourceLimit,
+            windowMs: evidenceQuotaWindow,
+            consumedAt
+          });
+        } catch {
+          throw new HttpError(503, "EVIDENCE_QUOTA_UNAVAILABLE", "Evidence preflight quota is unavailable");
+        }
+        if (!quota || typeof quota.allowed !== "boolean") {
+          throw new HttpError(503, "EVIDENCE_QUOTA_UNAVAILABLE", "Evidence preflight quota is unavailable");
+        }
+        if (!quota.allowed) {
+          const resetAt = new Date(quota?.resetAt).getTime();
+          if (Number.isFinite(resetAt)) {
+            res.setHeader("Retry-After", String(Math.max(1, Math.ceil((resetAt - consumedAt.getTime()) / 1_000))));
+          }
+          throw new HttpError(
+            429,
+            "EVIDENCE_PREFLIGHT_QUOTA_EXCEEDED",
+            "Evidence preflight quota was exceeded; retry after the quota window"
+          );
+        }
+        const result = await preflightEvidence(req.body);
+        res.json({ ...result, requestId: req.promiseBondRequestId });
+      } finally {
+        activeEvidencePreflights -= 1;
+      }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/promisebond/contracts", async (req, res, next) => {
@@ -340,6 +437,10 @@ export function createPromiseBondApp({
     }
     if (error instanceof PromiseBondValidationError) {
       safeError(res, req.promiseBondRequestId, 400, "INVALID_REQUEST", error.message);
+      return;
+    }
+    if (error instanceof EvidencePreflightError) {
+      safeError(res, req.promiseBondRequestId, error.status, error.code, error.message);
       return;
     }
     if (error instanceof HttpError) {
