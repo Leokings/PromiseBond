@@ -1,5 +1,7 @@
 # PromiseBond
 
+[![PromiseBond CI](https://github.com/Leokings/PromiseBond/actions/workflows/ci.yml/badge.svg)](https://github.com/Leokings/PromiseBond/actions/workflows/ci.yml)
+
 PromiseBond turns a public promise into a financially backed commitment. A creator defines verifiable terms, locks native GEN in a GenLayer intelligent contract, and names a beneficiary. After the deadline, GenLayer validators evaluate the approved evidence and the contract settles the bond.
 
 **Live app:** [promisebond-alpha.vercel.app](https://promisebond-alpha.vercel.app)

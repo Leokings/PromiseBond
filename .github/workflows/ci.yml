@@ -1,0 +1,47 @@
+name: PromiseBond CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install GenLayer test tools
+        run: pip install -r requirements-contracts.txt
+
+      - name: Build isolated production artifact
+        run: npm run build
+
+      - name: Run server and client verification
+        run: npm run test:server
+
+      - name: Run 27 direct intelligent-contract tests
+        run: npm run test:contract
+
+      - name: Validate intelligent contract
+        run: npm run contracts:lint
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
