@@ -458,7 +458,6 @@ function runWithTimeout(work, milliseconds, parentSignal) {
       reject(new EvidencePreflightError(504, "EVIDENCE_SOURCE_TIMEOUT", "An evidence source exceeded the 8-second timeout"));
       controller.abort();
     }, milliseconds);
-    timer.unref?.();
   });
   return Promise.race([Promise.resolve().then(() => work(controller.signal)), timedOut, cancelled])
     .finally(() => {
