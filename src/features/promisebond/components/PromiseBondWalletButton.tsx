@@ -14,7 +14,8 @@ export function PromiseBondWalletButton() {
   const disconnectState = useDisconnect();
   const switchState = useSwitchChain();
   const [open, setOpen] = useState(false);
-  const wrongNetwork = account.isConnected && account.chainId !== promiseBondChain.id;
+  const walletReady = account.status === "connected";
+  const wrongNetwork = walletReady && account.chainId !== promiseBondChain.id;
   const dialogRef = useModalDialog(open, () => setOpen(false));
 
   function disconnect() {
@@ -25,7 +26,7 @@ export function PromiseBondWalletButton() {
   return (
     <>
       <button
-        className={`wallet-button ${account.isConnected ? "account" : ""} ${wrongNetwork ? "warning" : ""}`}
+        className={`wallet-button ${walletReady ? "account" : ""} ${wrongNetwork ? "warning" : ""}`}
         onClick={() => setOpen(true)}
         type="button"
       >
@@ -33,6 +34,8 @@ export function PromiseBondWalletButton() {
         <span>
           {wrongNetwork
             ? "Switch network"
+            : account.isReconnecting
+              ? "Restoring wallet…"
             : account.address
               ? shortAddress(account.address)
               : "Connect wallet"}
@@ -54,13 +57,13 @@ export function PromiseBondWalletButton() {
             <header>
               <div>
                 <span>SELF-CUSTODIAL ACCESS</span>
-                <h2 id="wallet-dialog-title">{account.isConnected ? "Wallet connected" : "Choose a wallet"}</h2>
+                <h2 id="wallet-dialog-title">{walletReady ? "Wallet connected" : account.isReconnecting ? "Restoring wallet" : "Choose a wallet"}</h2>
               </div>
               <button aria-label="Close wallet dialog" onClick={() => setOpen(false)} type="button"><X size={18} /></button>
             </header>
 
             <div className="pb-wallet-content">
-              {account.isConnected ? (
+              {walletReady ? (
                 <>
                   <div className="pb-wallet-account">
                     <span>CONNECTED ADDRESS</span>
@@ -84,6 +87,10 @@ export function PromiseBondWalletButton() {
                     <LogOut size={16} /> Disconnect
                   </button>
                 </>
+              ) : account.isReconnecting ? (
+                <div className="pb-wallet-network">
+                  <i /> Restoring the previously connected wallet. Transaction actions remain disabled until it is ready.
+                </div>
               ) : (
                 <div className="pb-wallet-options">
                   {connectState.connectors.map((connector) => (
