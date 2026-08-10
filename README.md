@@ -15,13 +15,16 @@ PromiseBond turns a public promise into a financially backed commitment. A creat
 
 Custody, resolution, and settlement all happen on GenLayer. MongoDB is used only as an advisory public index and recovery layer; finalized GenLayer state remains authoritative.
 
-## Live canary
+## Finalized lifecycle proof
 
 - Network: GenLayer Bradbury (chain `4221`)
-- Contract: `0xBbf887EDD086B73b458c40061f3cB8dD6b2E0EDe`
-- State: funded and finalized (`LOCKED`)
-- Locked amount: `0.001 GEN`
-- Contract source hash: `0xea739a4cc74438ffebb4656fd2ebc39d2a1df2239a6a9722ac227009c0488ea1`
+- Contract: `0xd5b018f1449598a2af54b8b39d433328D32ccE79`
+- Lifecycle: deployment, `0.001 GEN` funding, and resolution all finalized with `AGREE / FINISHED_WITH_RETURN`
+- Finalized outcome: `FULFILLED`; settlement state: `PAYOUT_QUEUED` to the creator
+- Finalized contract state: `0` locked and `0` contract balance after all three approved sources matched
+- Evidence record: [`config/promisebond/live-validation.json`](config/promisebond/live-validation.json)
+
+The record proves the finalized contract state and queued payout. It does not independently assert that the recipient's wallet balance was credited.
 
 ## Run locally
 
