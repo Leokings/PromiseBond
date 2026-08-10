@@ -34,6 +34,68 @@ test("separates wallet EVM broadcast RPC from GenLayer read/finality RPC", () =>
   assert.equal(providerConfig.promiseBondGenLayerChain.id, 4_221);
 });
 
+test("wallet provider uses an already-live connected connector", async () => {
+  const provider = { request: async () => "0x107d" };
+  const calls = [];
+  const connector = {
+    id: "injected",
+    type: "injected",
+    uid: "current-runtime",
+    async getProvider(parameters) {
+      calls.push(parameters);
+      return provider;
+    }
+  };
+
+  const result = await providerConfig.getPromiseBondWalletProvider(connector, []);
+
+  assert.equal(result, provider);
+  assert.deepEqual(calls, [{ chainId: 4_221 }]);
+});
+
+test("wallet provider resolves a uniquely matching live connector from hydrated identity", async () => {
+  const provider = { request: async () => "0x107d" };
+  const calls = [];
+  const hydratedConnector = { id: "io.metamask", type: "injected", uid: "persisted-uid" };
+  const runtimeConnector = {
+    id: "io.metamask",
+    type: "injected",
+    uid: "new-runtime-uid",
+    async getProvider(parameters) {
+      calls.push(parameters);
+      return provider;
+    }
+  };
+
+  const result = await providerConfig.getPromiseBondWalletProvider(
+    hydratedConnector,
+    [runtimeConnector]
+  );
+
+  assert.equal(result, provider);
+  assert.deepEqual(calls, [{ chainId: 4_221 }]);
+});
+
+test("wallet provider fails closed for an ambiguous hydrated connector identity", async () => {
+  const calls = [];
+  const hydratedConnector = { id: "injected", type: "injected", uid: "persisted-uid" };
+  const runtimeConnectors = ["first", "second"].map((uid) => ({
+    id: "injected",
+    type: "injected",
+    uid,
+    async getProvider() {
+      calls.push(uid);
+      return { request: async () => "0x107d" };
+    }
+  }));
+
+  await assert.rejects(
+    providerConfig.getPromiseBondWalletProvider(hydratedConnector, runtimeConnectors),
+    /Wallet connection is still restoring.*No transaction was submitted/i
+  );
+  assert.deepEqual(calls, []);
+});
+
 test("saved-hash reconciliation waits through Bradbury's appeal window and finalizer grace", () => {
   const observedAppealWindowMs = 30 * 60 * 1_000;
   const wait = promiseBond.PROMISEBOND_FINALITY_WAIT;

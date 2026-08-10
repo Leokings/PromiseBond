@@ -48,7 +48,10 @@ import {
 } from "../../promisebond/local-ledger";
 import { PromiseBondHeader } from "../../promisebond/components/PromiseBondHeader";
 import { useModalDialog } from "../../promisebond/components/useModalDialog";
-import { promiseBondChain } from "../../../providers/PromiseBondWalletProvider";
+import {
+  getPromiseBondWalletProvider,
+  promiseBondChain
+} from "../../../providers/PromiseBondWalletProvider";
 
 type BondDraft = PromiseBondFormSnapshot;
 
@@ -268,7 +271,8 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
   evidenceFingerprintRef.current = currentEvidenceFingerprint;
   evidencePreflightRef.current = evidencePreflight;
   const submissionPending = submissionProgress !== undefined && submissionProgress !== "complete";
-  const wrongNetwork = account.isConnected && account.chainId !== promiseBondChain.id;
+  const walletReady = account.status === "connected";
+  const wrongNetwork = walletReady && account.chainId !== promiseBondChain.id;
   const resolutionMinimum = getResolutionMinimum(draft.fundingDeadline);
   const currentRecord = records.find((record) => record.id === currentOperationId);
   const managedRecord = records.find((record) => record.id === managedRecordId);
@@ -660,9 +664,13 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
   }
 
   async function connectedProvider() {
-    if (!account.address || !account.connector) throw new Error("Connect the creator wallet first");
+    if (!walletReady || !account.address || !account.connector) {
+      throw new Error(account.isReconnecting
+        ? "Wallet connection is still restoring. Wait for it to finish, then retry. No transaction was submitted."
+        : "Connect the creator wallet first");
+    }
     if (wrongNetwork) throw new Error("Switch the wallet to GenLayer Bradbury before continuing");
-    const provider = await account.connector.getProvider({ chainId: promiseBondChain.id });
+    const provider = await getPromiseBondWalletProvider(account.connector);
     if (!provider || typeof provider !== "object" || !("request" in provider) || typeof provider.request !== "function") {
       throw new Error("Connected wallet did not provide an EIP-1193 signer");
     }
@@ -1283,9 +1291,9 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
                 <button className="pb-button primary" onClick={resetBuilder} type="button">Open another bond</button>
               ) : (
                 <button
-                  className={`pb-button ${account.isConnected && !wrongNetwork ? "primary" : "disabled"}`}
+                  className={`pb-button ${walletReady && !wrongNetwork ? "primary" : "disabled"}`}
                   disabled={
-                    !account.isConnected
+                    !walletReady
                     || wrongNetwork
                     || submissionPending
                     || (!currentRecord && !beneficiaryConfirmed)
@@ -1296,8 +1304,8 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
                   onClick={() => void (deployedContract ? retryFunding() : deployAndFund())}
                   type="button"
                 >
-                  {!account.isConnected
-                    ? "Connect wallet in header"
+                  {!walletReady
+                    ? account.isReconnecting ? "Restoring wallet connection…" : "Connect wallet in header"
                     : wrongNetwork
                       ? "Switch to Bradbury"
                       : submissionPending
@@ -1424,7 +1432,7 @@ export function PublicHomePage({ currentPage = "open-bond" }: {
               {managedActions.map((action) => (
                 <button
                   className="pb-button primary"
-                  disabled={!account.isConnected || wrongNetwork || managementPending}
+                  disabled={!walletReady || wrongNetwork || managementPending}
                   key={action}
                   onClick={() => void runBondAction(action)}
                   type="button"

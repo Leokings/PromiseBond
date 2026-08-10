@@ -67,6 +67,50 @@ export const promiseBondWalletConfig = createConfig({
   }
 });
 
+export type PromiseBondConnectorIdentity = {
+  readonly id: string;
+  readonly type: string;
+  readonly uid: string;
+  getProvider?: (parameters?: { chainId?: number }) => Promise<unknown>;
+};
+
+function resolvePromiseBondWalletConnector(
+  connector: PromiseBondConnectorIdentity,
+  runtimeConnectors: readonly PromiseBondConnectorIdentity[]
+) {
+  if (typeof connector.getProvider === "function") return connector;
+
+  const uidMatches = runtimeConnectors.filter(
+    (candidate) => candidate.uid === connector.uid && typeof candidate.getProvider === "function"
+  );
+  if (uidMatches.length === 1) return uidMatches[0];
+  if (uidMatches.length > 1) return undefined;
+
+  const identityMatches = runtimeConnectors.filter(
+    (candidate) => candidate.id === connector.id
+      && candidate.type === connector.type
+      && typeof candidate.getProvider === "function"
+  );
+  return identityMatches.length === 1 ? identityMatches[0] : undefined;
+}
+
+/**
+ * Wagmi persists only a connector's identity fields. During hydration, `useAccount()` can
+ * temporarily expose that partial object before reconnect replaces it with the live connector.
+ * Resolve the current runtime connector so every wallet kind uses its actual EIP-1193 provider.
+ */
+export async function getPromiseBondWalletProvider(
+  connector: PromiseBondConnectorIdentity,
+  runtimeConnectors: readonly PromiseBondConnectorIdentity[] = promiseBondWalletConfig.connectors
+) {
+  const liveConnector = resolvePromiseBondWalletConnector(connector, runtimeConnectors);
+
+  if (!liveConnector || typeof liveConnector.getProvider !== "function") {
+    throw new Error("Wallet connection is still restoring. Wait for it to finish, then retry. No transaction was submitted.");
+  }
+  return liveConnector.getProvider({ chainId: promiseBondChain.id });
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
